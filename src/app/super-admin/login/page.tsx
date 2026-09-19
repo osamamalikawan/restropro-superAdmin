@@ -55,7 +55,7 @@ export default function SuperAdminLoginPage() {
             <span className="font-display italic font-bold text-white text-xl">RP</span>
           </div>
           <h1 className="font-display text-2xl font-semibold text-ink-strong">Restro Pro</h1>
-          <p className="text-ink-faint text-xs uppercase tracking-wide mt-1">Super Admin Login</p>
+          <p className="text-ink-faint text-xs uppercase tracking-wide mt-1">Super Admin Console</p>
         </div>
 
         <form onSubmit={handleSubmit} className="rounded-xl border border-line bg-surface p-6 space-y-4 shadow-xl">
@@ -81,9 +81,12 @@ export default function SuperAdminLoginPage() {
             disabled={loading}
             className="w-full rounded-lg bg-chili-500 hover:bg-chili-600 disabled:opacity-50 text-white font-semibold py-2.5 transition-colors"
           >
-            {loading ? "Signing in..." : "Sign in"}
+            {loading ? "Signing in…" : "Sign in"}
           </button>
         </form>
+        <p className="text-center text-xs text-ink-faint mt-6">
+          Restaurant staff? <a href="/login" className="text-chili-400 hover:underline">Go to Restaurant Login →</a>
+        </p>
       </div>
     </main>
   );

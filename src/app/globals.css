@@ -1,40 +1,72 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
 /* ============================================================
-   DESIGN TOKENS — same chili/basil/turmeric identity as the
-   original prototype, now as CSS variables so light/dark can
-   actually be switched instead of being hardcoded Tailwind
-   neutral-* classes everywhere. Values are space-separated RGB
-   channels (not hex) so Tailwind's opacity modifiers work, e.g.
-   `bg-raised/50` — see tailwind.config.ts's `rgb(var(...) / <alpha-value>)`.
+   DESIGN TOKENS — chili/basil/turmeric identity.
+   Raw values live in :root / [data-theme="light"] so they can be
+   swapped at runtime (see ThemeToggle); the @theme block below
+   just points Tailwind v4's generated utilities at those same
+   variables, so e.g. `bg-canvas` always reflects whichever theme
+   is currently active rather than being baked in at build time.
    ============================================================ */
 :root {
-  --bg-canvas: 22 19 16;      /* #161310 */
-  --bg-surface: 30 26 22;     /* #1e1a16 */
-  --bg-raised: 38 33 28;      /* #26211c */
-  --bg-hover: 46 39 33;       /* #2e2721 */
-  --line: 56 49 42;           /* #38312a */
-  --line-soft: 42 36 32;      /* #2a2420 */
-  --ink-strong: 246 240 230;  /* #f6f0e6 */
-  --ink-mid: 203 192 176;     /* #cbc0b0 */
-  --ink-faint: 140 128 114;   /* #8c8072 */
+  --bg-canvas: #161310;
+  --bg-surface: #1e1a16;
+  --bg-raised: #26211c;
+  --bg-hover: #2e2721;
+  --line: #38312a;
+  --line-soft: #2a2420;
+  --ink-strong: #f6f0e6;
+  --ink-mid: #cbc0b0;
+  --ink-faint: #8c8072;
 }
 [data-theme="light"] {
-  --bg-canvas: 247 241 230;   /* #f7f1e6 */
-  --bg-surface: 255 253 248;  /* #fffdf8 */
-  --bg-raised: 255 255 255;   /* #ffffff */
-  --bg-hover: 241 233 217;    /* #f1e9d9 */
-  --line: 227 215 190;        /* #e3d7be */
-  --line-soft: 236 226 204;   /* #ece2cc */
-  --ink-strong: 36 28 18;     /* #241c12 */
-  --ink-mid: 92 81 64;        /* #5c5140 */
-  --ink-faint: 140 128 103;   /* #8c8067 */
+  --bg-canvas: #f7f1e6;
+  --bg-surface: #fffdf8;
+  --bg-raised: #ffffff;
+  --bg-hover: #f1e9d9;
+  --line: #e3d7be;
+  --line-soft: #ece2cc;
+  --ink-strong: #241c12;
+  --ink-mid: #5c5140;
+  --ink-faint: #8c8067;
+}
+
+@theme {
+  /* brand accents — same across both themes, matching the original prototype */
+  --color-chili-300: #F2A075;
+  --color-chili-400: #E86B3E;
+  --color-chili-500: #D9481F;
+  --color-chili-600: #B8391A;
+  --color-basil-400: #5C9273;
+  --color-basil-500: #3F6E52;
+  --color-basil-600: #2E5A41;
+  --color-turmeric-400: #E0B662;
+  --color-turmeric-500: #C99A3E;
+  --color-crimson-400: #D25861;
+  --color-crimson-500: #B7383F;
+
+  /* theme-aware surface/text tokens, indirected through the runtime variables above */
+  --color-canvas: var(--bg-canvas);
+  --color-surface: var(--bg-surface);
+  --color-raised: var(--bg-raised);
+  --color-hover: var(--bg-hover);
+  --color-line: var(--line);
+  --color-line-soft: var(--line-soft);
+  --color-ink-strong: var(--ink-strong);
+  --color-ink-mid: var(--ink-mid);
+  --color-ink-faint: var(--ink-faint);
+
+  /* fonts — set by next/font as CSS vars on <body> in layout.tsx.
+     --font-mono overrides Tailwind's built-in font-mono utility;
+     --font-display / --font-body are new utilities Tailwind v4
+     generates automatically from any --font-* key in this block. */
+  --font-display: var(--font-fraunces), serif;
+  --font-body: var(--font-public-sans), sans-serif;
+  --font-mono: var(--font-plex-mono), monospace;
 }
 
 body {
-  background: rgb(var(--bg-canvas));
-  color: rgb(var(--ink-strong));
+  background: var(--bg-canvas);
+  color: var(--ink-strong);
   transition: background .25s ease, color .25s ease;
 }
