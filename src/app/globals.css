@@ -70,3 +70,73 @@ body {
   color: var(--ink-strong);
   transition: background .25s ease, color .25s ease;
 }
+
+/* ============================================================
+   Global loading indicator (components/global-loading.tsx) and
+   the route-level loading.tsx fallback share these styles.
+   ============================================================ */
+.rp-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  z-index: 100;
+  opacity: 0;
+  pointer-events: none;
+  overflow: hidden;
+  transition: opacity .2s ease;
+}
+.rp-bar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, var(--color-chili-400), var(--color-turmeric-400));
+  border-radius: 999px;
+  animation: rp-slide 1s ease-in-out infinite;
+}
+.rp-bar-on { opacity: 1; }
+
+.rp-corner {
+  position: fixed;
+  top: 12px;
+  right: 16px;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--bg-surface);
+  color: var(--ink-mid);
+  border: 1px solid var(--line);
+  box-shadow: 0 4px 16px rgb(0 0 0 / .25);
+  opacity: 0;
+  transform: translateY(-6px);
+  pointer-events: none;
+  transition: opacity .2s ease, transform .2s ease;
+}
+.rp-corner-on { opacity: 1; transform: translateY(0); }
+
+.rp-spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--line);
+  border-top-color: var(--color-chili-500);
+  animation: rp-spin .7s linear infinite;
+}
+.rp-spinner-lg { width: 36px; height: 36px; border-width: 3px; }
+
+@keyframes rp-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+@keyframes rp-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rp-bar::before, .rp-spinner { animation-duration: 2s; }
+}

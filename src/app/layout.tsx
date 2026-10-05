@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Fraunces, Public_Sans, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
+import { GlobalLoading } from "@/components/global-loading";
 
 const fraunces = Fraunces({
   subsets: ["latin"],
@@ -47,6 +48,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
       </head>
       <body className={`${fraunces.variable} ${publicSans.variable} ${plexMono.variable} font-body`}>
+        <GlobalLoading />
         {children}
       </body>
     </html>

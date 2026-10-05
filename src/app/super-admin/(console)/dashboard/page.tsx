@@ -17,9 +17,9 @@ const STATUS_BADGE: Record<string, string> = {
 };
 
 export default async function SuperAdminDashboardPage() {
-  const admin = createAdminClient();
+    const admin = createAdminClient();
 
-  const [{ data: restaurants }, { data: subs }, { data: plans }] = await Promise.all([
+  const [restaurantsRes, subsRes, plansRes] = await Promise.all([
     admin
       .from("restaurants")
       .select("id, name, owner_name, city, country, status, plan_id, billing_cycle, created_at")
@@ -28,7 +28,25 @@ export default async function SuperAdminDashboardPage() {
     admin.from("subscription_plans").select("id, name, monthly_price, yearly_price"),
   ]);
 
-  const rs = restaurants ?? [];
+  // Surface query errors loudly instead of quietly falling back to an empty list — an RLS
+  // rejection or a bad admin-client key looks identical to "no data" otherwise, which is
+  // exactly the kind of thing that wastes an hour of guessing.
+  const queryError = restaurantsRes.error || subsRes.error || plansRes.error;
+  if (queryError) {
+    return (
+      <main className="p-8">
+        <h1 className="font-display text-2xl font-semibold mb-1">Dashboard</h1>
+        <div className="rounded-xl border border-crimson-500/40 bg-crimson-500/10 p-4 text-sm text-crimson-500 mt-4">
+          <div className="font-semibold mb-1">Couldn&apos;t load dashboard data</div>
+          <div className="font-mono text-xs">{queryError.message}</div>
+        </div>
+      </main>
+    );
+  }
+
+  const rs = restaurantsRes.data ?? [];
+  const subs = subsRes.data;
+  const plans = plansRes.data;
   const planById = new Map((plans ?? []).map((p) => [p.id, p]));
   const subByRestaurant = new Map((subs ?? []).map((s) => [s.restaurant_id, s]));
 
