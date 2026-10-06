@@ -1,7 +1,7 @@
 "use client";
 import { useMemo, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { addGalleryImage, createGalleryUpload, toggleGalleryImage, removeGalleryImage } from "./actions";
+import { addGalleryImage, createGalleryUpload, toggleGalleryImage, removeGalleryImage, updateGalleryImage } from "./actions";
 
 type Image = { id: string; title: string; url: string; category: string | null; tags: string[]; is_active: boolean };
 type PickedFile = { file: File; preview: string };
@@ -32,6 +32,16 @@ export function GalleryClient({ images }: { images: Image[] }) {
   const [progress, setProgress] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+
+  // Edit drawer state
+  const [editing, setEditing] = useState<Image | null>(null);
+  const [eTitle, setETitle] = useState("");
+  const [eCategory, setECategory] = useState("");
+  const [eTags, setETags] = useState("");
+  const [eFile, setEFile] = useState<PickedFile | null>(null);
+  const [eError, setEError] = useState("");
+  const [eSaving, setESaving] = useState(false);
+  const editFileInput = useRef<HTMLInputElement>(null);
 
   // Filters are driven by Category: one pill per distinct category, with counts.
   const categories = useMemo(() => {
@@ -142,6 +152,67 @@ export function GalleryClient({ images }: { images: Image[] }) {
     }
   }
 
+  function openEdit(img: Image) {
+    setEditing(img);
+    setETitle(img.title);
+    setECategory(img.category ?? "");
+    setETags(img.tags.join(", "));
+    setEFile(null);
+    setEError("");
+  }
+
+  function closeEdit() {
+    if (eSaving) return;
+    if (eFile) URL.revokeObjectURL(eFile.preview);
+    setEFile(null);
+    setEditing(null);
+  }
+
+  function pickEditFile(f: File | undefined) {
+    if (!f) return;
+    if (!f.type.startsWith("image/")) return setEError(`${f.name} is not an image`);
+    if (f.size > MAX_BYTES) return setEError(`${f.name} is larger than 5 MB`);
+    if (eFile) URL.revokeObjectURL(eFile.preview);
+    setEError("");
+    setEFile({ file: f, preview: URL.createObjectURL(f) });
+  }
+
+  async function saveEdit() {
+    if (!editing) return;
+    setEError("");
+    setESaving(true);
+    let newUrl = editing.url;
+    if (eFile) {
+      const slot = await createGalleryUpload({ fileName: eFile.file.name, contentType: eFile.file.type, size: eFile.file.size });
+      if (!slot.ok) {
+        setESaving(false);
+        return setEError(slot.error);
+      }
+      const { error: upErr } = await createClient()
+        .storage.from("gallery")
+        .uploadToSignedUrl(slot.path, slot.token, eFile.file, { contentType: eFile.file.type });
+      if (upErr) {
+        setESaving(false);
+        return setEError(upErr.message);
+      }
+      newUrl = slot.publicUrl;
+    }
+    const typed = eCategory.trim();
+    const cat = categories.list.find(([c]) => c.toLowerCase() === typed.toLowerCase())?.[0] ?? typed;
+    const res = await updateGalleryImage({
+      id: editing.id,
+      title: eTitle,
+      url: newUrl,
+      category: cat,
+      tags: eTags.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean),
+    });
+    setESaving(false);
+    if (!res.ok) return setEError(res.error);
+    if (eFile) URL.revokeObjectURL(eFile.preview);
+    setEFile(null);
+    setEditing(null);
+  }
+
   async function toggle(img: Image) {
     setBusyId(img.id);
     const res = await toggleGalleryImage(img.id, !img.is_active);
@@ -162,6 +233,9 @@ export function GalleryClient({ images }: { images: Image[] }) {
 
   return (
     <div>
+      <datalist id="gallery-categories">
+        {categories.list.map(([c]) => <option key={c} value={c} />)}
+      </datalist>
       <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
         <input
           value={search}
@@ -268,9 +342,6 @@ export function GalleryClient({ images }: { images: Image[] }) {
                 placeholder="Burgers"
                 className={inputCls}
               />
-              <datalist id="gallery-categories">
-                {categories.list.map(([c]) => <option key={c} value={c} />)}
-              </datalist>
             </div>
             <div>
               <label className={labelCls}>Tags (comma separated)</label>
@@ -299,6 +370,9 @@ export function GalleryClient({ images }: { images: Image[] }) {
                   {img.is_active ? "Active" : "Hidden"}
                 </span>
                 <div className="flex gap-1">
+                  <button onClick={() => openEdit(img)} disabled={busyId === img.id} className="text-xs px-2 py-1 rounded-md bg-raised hover:bg-hover">
+                    Edit
+                  </button>
                   <button onClick={() => toggle(img)} disabled={busyId === img.id} className="text-xs px-2 py-1 rounded-md bg-raised hover:bg-hover" title={img.is_active ? "Hide" : "Activate"}>
                     {img.is_active ? "Hide" : "Show"}
                   </button>
@@ -312,6 +386,54 @@ export function GalleryClient({ images }: { images: Image[] }) {
         ))}
         {filtered.length === 0 && <div className="col-span-full text-center py-10 text-ink-faint text-sm">No images match, try another category or add one.</div>}
       </div>
+      {editing && (
+        <div className="fixed inset-0 z-50 flex justify-end">
+          <div className="absolute inset-0 bg-black/50" onClick={closeEdit} />
+          <aside className="relative w-full max-w-md h-full bg-surface border-l border-line p-5 overflow-y-auto space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="font-display text-lg font-semibold">Edit image</h2>
+              <button onClick={closeEdit} aria-label="Close" className="text-ink-faint hover:text-ink-strong text-xl leading-none">×</button>
+            </div>
+
+            <div>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={eFile?.preview ?? editing.url} alt={eTitle} className="w-full h-48 object-cover rounded-lg bg-raised" />
+              <button
+                onClick={() => editFileInput.current?.click()}
+                disabled={eSaving}
+                className="mt-2 text-xs font-semibold px-3 py-1.5 rounded-md bg-raised hover:bg-hover"
+              >
+                {eFile ? "Choose a different picture" : "Change picture"}
+              </button>
+              {eFile && <span className="ml-2 text-xs text-ink-faint">{eFile.file.name}</span>}
+              <input ref={editFileInput} type="file" accept={ACCEPT} className="hidden" onChange={(e) => { pickEditFile(e.target.files?.[0]); e.target.value = ""; }} />
+            </div>
+
+            <div>
+              <label className={labelCls}>Title</label>
+              <input value={eTitle} onChange={(e) => setETitle(e.target.value)} className={inputCls} />
+            </div>
+            <div>
+              <label className={labelCls}>Category</label>
+              <input value={eCategory} onChange={(e) => setECategory(e.target.value)} list="gallery-categories" placeholder="Burgers" className={inputCls} />
+            </div>
+            <div>
+              <label className={labelCls}>Tags (comma separated)</label>
+              <input value={eTags} onChange={(e) => setETags(e.target.value)} placeholder="beef, spicy" className={inputCls} />
+            </div>
+
+            {eError && <p className="text-crimson-500 text-xs">{eError}</p>}
+            <div className="flex gap-2">
+              <button onClick={saveEdit} disabled={eSaving} className="rounded-md bg-chili-500 hover:bg-chili-600 text-white text-xs font-semibold px-4 py-2 disabled:opacity-50">
+                {eSaving ? "Saving…" : "Save changes"}
+              </button>
+              <button onClick={closeEdit} disabled={eSaving} className="rounded-md bg-raised hover:bg-hover text-xs font-semibold px-4 py-2">
+                Cancel
+              </button>
+            </div>
+          </aside>
+        </div>
+      )}
     </div>
   );
 }

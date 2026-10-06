@@ -11,6 +11,14 @@ const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif", "im
  *  { ok, error } instead of throwing — the client shows `error` directly. */
 type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
 
+/** Object path inside the gallery bucket for URLs we uploaded; null for pasted external URLs. */
+function bucketPathFromUrl(url: string | null | undefined) {
+  const marker = `/storage/v1/object/public/${BUCKET}/`;
+  const idx = url?.indexOf(marker) ?? -1;
+  if (!url || idx === -1) return null;
+  return decodeURIComponent(url.slice(idx + marker.length).split("?")[0]);
+}
+
 export async function listGalleryImages() {
   await requireSuperAdminUser();
   const admin = createAdminClient();
@@ -73,6 +81,43 @@ export async function addGalleryImage(input: { title: string; url: string; categ
   }
 }
 
+/** Edit title / category / tags, and optionally swap the picture (pass a new `url`, e.g. from
+ *  createGalleryUpload). If the picture changed, the old stored file is deleted. */
+export async function updateGalleryImage(input: {
+  id: string;
+  title: string;
+  url: string;
+  category: string;
+  tags: string[];
+}): Promise<Result> {
+  try {
+    await requireSuperAdminUser();
+    if (!input.title.trim()) return { ok: false, error: "Title is required" };
+    if (!input.url.trim()) return { ok: false, error: "Image is required" };
+    const admin = createAdminClient();
+    const { data: before } = await admin.from("gallery_images").select("url").eq("id", input.id).single();
+    const { error } = await admin
+      .from("gallery_images")
+      .update({
+        title: input.title.trim(),
+        url: input.url.trim(),
+        category: input.category.trim() || null,
+        tags: input.tags,
+      })
+      .eq("id", input.id);
+    if (error) return { ok: false, error: error.message };
+
+    if (before?.url && before.url !== input.url.trim()) {
+      const oldPath = bucketPathFromUrl(before.url);
+      if (oldPath) await admin.storage.from(BUCKET).remove([oldPath]);
+    }
+    revalidatePath("/super-admin/gallery");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Could not update image" };
+  }
+}
+
 export async function toggleGalleryImage(id: string, isActive: boolean): Promise<Result> {
   try {
     await requireSuperAdminUser();
@@ -95,12 +140,8 @@ export async function removeGalleryImage(id: string): Promise<Result> {
     if (error) return { ok: false, error: error.message };
 
     // Also delete the stored file if this row pointed at our bucket (pasted external URLs are left alone).
-    const marker = `/storage/v1/object/public/${BUCKET}/`;
-    const idx = row?.url?.indexOf(marker) ?? -1;
-    if (row?.url && idx !== -1) {
-      const objectPath = decodeURIComponent(row.url.slice(idx + marker.length).split("?")[0]);
-      await admin.storage.from(BUCKET).remove([objectPath]);
-    }
+    const objectPath = bucketPathFromUrl(row?.url);
+    if (objectPath) await admin.storage.from(BUCKET).remove([objectPath]);
     revalidatePath("/super-admin/gallery");
     return { ok: true };
   } catch (e) {
