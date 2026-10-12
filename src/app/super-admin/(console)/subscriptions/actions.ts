@@ -3,6 +3,7 @@ import { revalidatePath } from "next/cache";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireSuperAdminUser } from "@/lib/auth/require-super-admin";
 import { graceUntil } from "@/lib/subscription";
+import { applyRenewal, renewedPeriodEnd } from "@/lib/renewal";
 
 export async function listPlans() {
   await requireSuperAdminUser();
@@ -93,6 +94,9 @@ export async function saveSubscription(input: {
     })
     .eq("id", input.subscriptionId);
   await admin.from("restaurants").update({ plan_id: input.planId, billing_cycle: input.billingCycle }).eq("id", input.restaurantId);
+  // A future end date means the subscription is live again: clear cancelled/expired and bring an
+  // 'expired' restaurant back, otherwise staff are still refused at login.
+  if (periodEnd.getTime() > Date.now()) await applyRenewal(admin, input.restaurantId, input.subscriptionId, periodEnd);
 
   await admin.from("audit_logs").insert({
     restaurant_id: input.restaurantId,
@@ -112,13 +116,10 @@ export async function extendSubscription(subscriptionId: string, restaurantId: s
   const { data: sub } = await admin.from("subscriptions").select("current_period_end").eq("id", subscriptionId).single();
   if (!sub) throw new Error("Subscription not found");
 
-  const newEnd = new Date(sub.current_period_end);
-  newEnd.setMonth(newEnd.getMonth() + months);
-
-  await admin
-    .from("subscriptions")
-    .update({ current_period_end: newEnd.toISOString(), grace_until: graceUntil(newEnd).toISOString() })
-    .eq("id", subscriptionId);
+  // Counts from today when the subscription had already lapsed, and (via applyRenewal) revives an
+  // expired restaurant instead of leaving it locked out.
+  const newEnd = renewedPeriodEnd(sub.current_period_end, months);
+  await applyRenewal(admin, restaurantId, subscriptionId, newEnd);
 
   await admin.from("audit_logs").insert({
     restaurant_id: restaurantId,

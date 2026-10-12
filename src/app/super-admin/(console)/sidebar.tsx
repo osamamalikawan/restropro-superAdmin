@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Building2, CreditCard, Image as ImageIcon, ScrollText, Bell, Settings as SettingsIcon, type LucideIcon } from "lucide-react";
+import { LayoutDashboard, Building2, CreditCard, Image as ImageIcon, ScrollText, Bell, Package, Settings as SettingsIcon, type LucideIcon } from "lucide-react";
 
 type NavItem = { href: string; label: string; icon: LucideIcon };
 
@@ -10,6 +10,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: "/super-admin/restaurants", label: "Restaurants", icon: Building2 },
   { href: "/super-admin/subscriptions", label: "Subscriptions", icon: CreditCard },
   { href: "/super-admin/gallery", label: "Master Gallery", icon: ImageIcon },
+  { href: "/super-admin/ingredients", label: "Ingredients", icon: Package },
   { href: "/super-admin/audit-log", label: "Audit Log", icon: ScrollText },
   { href: "/super-admin/notifications", label: "Notifications", icon: Bell },
   { href: "/super-admin/settings", label: "Settings", icon: SettingsIcon },

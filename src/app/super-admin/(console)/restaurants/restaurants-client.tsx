@@ -1,7 +1,7 @@
 "use client";
 import { useMemo, useState } from "react";
+import { ProfileModal } from "./profile-modal";
 import {
-  getRestaurantProfile,
   onboardRestaurant,
   activateRestaurant,
   suspendRestaurant,
@@ -25,7 +25,6 @@ type Restaurant = {
   subscriptions: { current_period_start: string; current_period_end: string; status: string }[];
 };
 type Plan = { id: string; name: string; monthly_price: number };
-type Profile = Awaited<ReturnType<typeof getRestaurantProfile>>;
 
 const STATUS_LABEL: Record<string, string> = { pending: "Pending", active: "Active", suspended: "Suspended", terminated: "Terminated", expired: "Expired" };
 const STATUS_BADGE: Record<string, string> = {
@@ -37,6 +36,10 @@ const STATUS_BADGE: Record<string, string> = {
 };
 const STATUS_TABS = ["all", "pending", "active", "suspended", "terminated", "expired"];
 
+function reactivateMessage(name: string, status: string) {
+  if (status === "suspended") return `Reactivate ${name}? Staff will be able to log in again.`;
+  return `Reactivate ${name}? It is currently ${status}. If its subscription has lapsed, a fresh billing period starts today.`;
+}
 function initials(name: string) {
   return name.split(" ").map((w) => w[0]).slice(0, 2).join("").toUpperCase();
 }
@@ -49,8 +52,7 @@ export function RestaurantsClient({ restaurants, plans }: { restaurants: Restaur
   const [statusFilter, setStatusFilter] = useState("all");
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  const [profile, setProfile] = useState<Profile | null>(null);
-  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileId, setProfileId] = useState<string | null>(null);
 
   const [showOnboard, setShowOnboard] = useState(false);
   const [onboardError, setOnboardError] = useState("");
@@ -67,23 +69,15 @@ export function RestaurantsClient({ restaurants, plans }: { restaurants: Restaur
 
   const planById = new Map(plans.map((p) => [p.id, p]));
 
-  async function openProfile(id: string) {
-    setProfileLoading(true);
-    setProfile(null);
-    try {
-      const data = await getRestaurantProfile(id);
-      setProfile(data);
-    } finally {
-      setProfileLoading(false);
-    }
+  function openProfile(id: string) {
+    setProfileId(id);
   }
 
-  async function runAction(fn: (id: string) => Promise<void>, id: string, confirmMsg?: string) {
+  async function runAction(fn: (id: string) => Promise<unknown>, id: string, confirmMsg?: string) {
     if (confirmMsg && !window.confirm(confirmMsg)) return;
     setBusyId(id);
     try {
       await fn(id);
-      if (profile?.id === id) await openProfile(id); // refresh the open modal, if it's this one
     } finally {
       setBusyId(null);
     }
@@ -120,9 +114,13 @@ export function RestaurantsClient({ restaurants, plans }: { restaurants: Restaur
           Suspend
         </button>
       );
-    if (r.status === "suspended")
+    if (r.status === "suspended" || r.status === "terminated" || r.status === "expired")
       return (
-        <button disabled={disabled} onClick={() => runAction(reactivateRestaurant, r.id)} className="text-xs px-2 py-1 rounded-md bg-basil-500 text-white hover:bg-basil-600 disabled:opacity-50">
+        <button
+          disabled={disabled}
+          onClick={() => runAction(reactivateRestaurant, r.id, reactivateMessage(r.name, r.status))}
+          className="text-xs px-2 py-1 rounded-md bg-basil-500 text-white hover:bg-basil-600 disabled:opacity-50"
+        >
           Reactivate
         </button>
       );
@@ -219,110 +217,7 @@ export function RestaurantsClient({ restaurants, plans }: { restaurants: Restaur
         </table>
       </div>
 
-      {/* ---- Profile modal ---- */}
-      {(profileLoading || profile) && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setProfile(null)}>
-          <div className="w-full max-w-lg rounded-xl border border-line bg-surface p-6 max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-            {profileLoading && <p className="text-ink-faint text-sm">Loading…</p>}
-            {profile && (
-              <>
-                <div className="flex items-start gap-4 mb-4">
-                  <div className="w-14 h-14 rounded-full bg-chili-500 text-white flex items-center justify-center font-display font-semibold text-lg shrink-0">
-                    {initials(profile.name)}
-                  </div>
-                  <div className="flex-1">
-                    <h2 className="font-display text-lg font-semibold">{profile.name}</h2>
-                    <div className="flex gap-2 mt-1.5 flex-wrap">
-                      <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${STATUS_BADGE[profile.status] ?? ""}`}>{STATUS_LABEL[profile.status] ?? profile.status}</span>
-                      <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-raised text-ink-mid">{(profile as any).subscription_plans?.name ?? "No plan"}</span>
-                    </div>
-                  </div>
-                  <button onClick={() => setProfile(null)} className="text-ink-faint hover:text-ink-strong text-xl leading-none">
-                    ×
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3 text-sm mb-4">
-                  <div>
-                    <div className="text-xs text-ink-faint">Owner</div>
-                    <div className="font-semibold">{profile.owner_name}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs text-ink-faint">Email</div>
-                    <div className="font-semibold truncate">{profile.email}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs text-ink-faint">Phone</div>
-                    <div className="font-semibold">{profile.phone || "—"}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs text-ink-faint">Location</div>
-                    <div className="font-semibold">{[profile.city, profile.country].filter(Boolean).join(", ") || "—"}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs text-ink-faint">Subscription period</div>
-                    <div className="font-semibold">
-                      {fmtDate((profile as any).subscriptions?.[0]?.current_period_start)} → {fmtDate((profile as any).subscriptions?.[0]?.current_period_end)}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-xs text-ink-faint">Registered</div>
-                    <div className="font-semibold">{fmtDate(profile.created_at)}</div>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-3 gap-3 mb-5">
-                  <div className="rounded-lg border border-line p-3 text-center">
-                    <div className="text-xl font-display font-bold">{profile.employeeCount}</div>
-                    <div className="text-[11px] text-ink-faint">Employees</div>
-                  </div>
-                  <div className="rounded-lg border border-line p-3 text-center">
-                    <div className="text-xl font-display font-bold">{profile.orderCount}</div>
-                    <div className="text-[11px] text-ink-faint">Orders logged</div>
-                  </div>
-                  <div className="rounded-lg border border-line p-3 text-center">
-                    <div className="text-xl font-display font-bold">{profile.productCount}</div>
-                    <div className="text-[11px] text-ink-faint">Menu items</div>
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap gap-2">
-                  {profile.status === "pending" && (
-                    <button onClick={() => runAction(activateRestaurant, profile.id)} disabled={busyId === profile.id} className="rounded-md bg-basil-500 hover:bg-basil-600 text-white text-xs font-semibold px-4 py-2 disabled:opacity-50">
-                      Approve
-                    </button>
-                  )}
-                  {profile.status === "active" && (
-                    <button
-                      onClick={() => runAction(suspendRestaurant, profile.id, `Suspend ${profile.name}? Staff won't be able to log in until it's reactivated.`)}
-                      disabled={busyId === profile.id}
-                      className="rounded-md bg-raised hover:bg-hover text-xs font-semibold px-4 py-2 disabled:opacity-50"
-                    >
-                      Suspend
-                    </button>
-                  )}
-                  {profile.status === "suspended" && (
-                    <button onClick={() => runAction(reactivateRestaurant, profile.id)} disabled={busyId === profile.id} className="rounded-md bg-basil-500 hover:bg-basil-600 text-white text-xs font-semibold px-4 py-2 disabled:opacity-50">
-                      Reactivate
-                    </button>
-                  )}
-                  {profile.status !== "terminated" && (
-                    <button
-                      onClick={() =>
-                        runAction(terminateRestaurant, profile.id, `Terminate ${profile.name}? This permanently removes access and should be used carefully.`)
-                      }
-                      disabled={busyId === profile.id}
-                      className="rounded-md bg-crimson-500/15 text-crimson-500 hover:bg-crimson-500/25 text-xs font-semibold px-4 py-2 disabled:opacity-50"
-                    >
-                      Terminate
-                    </button>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
+      <ProfileModal restaurantId={profileId} onClose={() => setProfileId(null)} />
 
       {/* ---- Onboard modal ---- */}
       {showOnboard && (
