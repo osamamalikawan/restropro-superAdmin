@@ -1,0 +1,783 @@
+diff --git a/src/app/globals.css b/src/app/globals.css
+index 5172651..46f927e 100644
+--- a/src/app/globals.css
++++ b/src/app/globals.css
+@@ -70,3 +70,73 @@ body {
+   color: var(--ink-strong);
+   transition: background .25s ease, color .25s ease;
+ }
++
++/* ============================================================
++   Global loading indicator (components/global-loading.tsx) and
++   the route-level loading.tsx fallback share these styles.
++   ============================================================ */
++.rp-bar {
++  position: fixed;
++  top: 0;
++  left: 0;
++  right: 0;
++  height: 3px;
++  z-index: 100;
++  opacity: 0;
++  pointer-events: none;
++  overflow: hidden;
++  transition: opacity .2s ease;
++}
++.rp-bar::before {
++  content: "";
++  position: absolute;
++  inset: 0;
++  width: 40%;
++  background: linear-gradient(90deg, transparent, var(--color-chili-400), var(--color-turmeric-400));
++  border-radius: 999px;
++  animation: rp-slide 1s ease-in-out infinite;
++}
++.rp-bar-on { opacity: 1; }
++
++.rp-corner {
++  position: fixed;
++  top: 12px;
++  right: 16px;
++  z-index: 100;
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  padding: 6px 12px;
++  border-radius: 999px;
++  background: var(--bg-surface);
++  color: var(--ink-mid);
++  border: 1px solid var(--line);
++  box-shadow: 0 4px 16px rgb(0 0 0 / .25);
++  opacity: 0;
++  transform: translateY(-6px);
++  pointer-events: none;
++  transition: opacity .2s ease, transform .2s ease;
++}
++.rp-corner-on { opacity: 1; transform: translateY(0); }
++
++.rp-spinner {
++  display: inline-block;
++  width: 16px;
++  height: 16px;
++  border-radius: 50%;
++  border: 2px solid var(--line);
++  border-top-color: var(--color-chili-500);
++  animation: rp-spin .7s linear infinite;
++}
++.rp-spinner-lg { width: 36px; height: 36px; border-width: 3px; }
++
++@keyframes rp-slide {
++  0% { transform: translateX(-100%); }
++  100% { transform: translateX(350%); }
++}
++@keyframes rp-spin {
++  to { transform: rotate(360deg); }
++}
++@media (prefers-reduced-motion: reduce) {
++  .rp-bar::before, .rp-spinner { animation-duration: 2s; }
++}
+diff --git a/src/app/layout.tsx b/src/app/layout.tsx
+index 129c3a9..fb9e710 100644
+--- a/src/app/layout.tsx
++++ b/src/app/layout.tsx
+@@ -1,6 +1,7 @@
+ import type { Metadata } from "next";
+ import { Fraunces, Public_Sans, IBM_Plex_Mono } from "next/font/google";
+ import "./globals.css";
++import { GlobalLoading } from "@/components/global-loading";
+ 
+ const fraunces = Fraunces({
+   subsets: ["latin"],
+@@ -47,6 +48,7 @@ export default function RootLayout({ children }: { children: React.ReactNode })
+         />
+       </head>
+       <body className={`${fraunces.variable} ${publicSans.variable} ${plexMono.variable} font-body`}>
++        <GlobalLoading />
+         {children}
+       </body>
+     </html>
+diff --git a/src/app/super-admin/(console)/gallery/actions.ts b/src/app/super-admin/(console)/gallery/actions.ts
+index 97c6584..43f9fa7 100644
+--- a/src/app/super-admin/(console)/gallery/actions.ts
++++ b/src/app/super-admin/(console)/gallery/actions.ts
+@@ -3,6 +3,14 @@ import { revalidatePath } from "next/cache";
+ import { createAdminClient } from "@/lib/supabase/admin";
+ import { requireSuperAdminUser } from "@/lib/auth/require-super-admin";
+ 
++const BUCKET = "gallery";
++const MAX_BYTES = 5 * 1024 * 1024;
++const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif", "image/avif"];
++
++/** Server actions swallow thrown error messages in production builds, so these return
++ *  { ok, error } instead of throwing — the client shows `error` directly. */
++type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
++
+ export async function listGalleryImages() {
+   await requireSuperAdminUser();
+   const admin = createAdminClient();
+@@ -13,31 +21,89 @@ export async function listGalleryImages() {
+   return data ?? [];
+ }
+ 
+-export async function addGalleryImage(input: { title: string; url: string; category: string; tags: string[] }) {
+-  const actor = await requireSuperAdminUser();
+-  if (!input.title.trim()) throw new Error("Title is required");
+-  if (!input.url.trim()) throw new Error("Image URL is required");
+-  const admin = createAdminClient();
+-  await admin.from("gallery_images").insert({
+-    title: input.title.trim(),
+-    url: input.url.trim(),
+-    category: input.category.trim() || null,
+-    tags: input.tags,
+-    created_by: actor.id,
+-  });
+-  revalidatePath("/super-admin/gallery");
++/** Step 1 of an upload: validate the file's metadata and mint a one-shot signed upload URL.
++ *  The browser then sends the file straight to Supabase Storage, so it never passes through
++ *  a server action (which is capped at ~1 MB by default and ~4.5 MB on Vercel). */
++export async function createGalleryUpload(input: {
++  fileName: string;
++  contentType: string;
++  size: number;
++}): Promise<Result<{ path: string; token: string; publicUrl: string }>> {
++  try {
++    await requireSuperAdminUser();
++    if (!ALLOWED_TYPES.includes(input.contentType)) return { ok: false, error: "Only JPG, PNG, WebP, GIF or AVIF images are allowed" };
++    if (input.size > MAX_BYTES) return { ok: false, error: "Image is larger than 5 MB" };
++
++    const ext = (input.fileName.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 5) || "jpg";
++    const path = `${new Date().getFullYear()}/${crypto.randomUUID()}.${ext}`;
++
++    const admin = createAdminClient();
++    const { data, error } = await admin.storage.from(BUCKET).createSignedUploadUrl(path);
++    if (error || !data) {
++      return {
++        ok: false,
++        error: `${error?.message ?? "Could not start upload"} — make sure migration 0009 (the "gallery" storage bucket) has been applied`,
++      };
++    }
++    const { data: pub } = admin.storage.from(BUCKET).getPublicUrl(path);
++    return { ok: true, path, token: data.token, publicUrl: pub.publicUrl };
++  } catch (e) {
++    return { ok: false, error: e instanceof Error ? e.message : "Could not start upload" };
++  }
+ }
+ 
+-export async function toggleGalleryImage(id: string, isActive: boolean) {
+-  await requireSuperAdminUser();
+-  const admin = createAdminClient();
+-  await admin.from("gallery_images").update({ is_active: isActive }).eq("id", id);
+-  revalidatePath("/super-admin/gallery");
++export async function addGalleryImage(input: { title: string; url: string; category: string; tags: string[] }): Promise<Result> {
++  try {
++    const actor = await requireSuperAdminUser();
++    if (!input.title.trim()) return { ok: false, error: "Title is required" };
++    if (!input.url.trim()) return { ok: false, error: "Image is required" };
++    const admin = createAdminClient();
++    const { error } = await admin.from("gallery_images").insert({
++      title: input.title.trim(),
++      url: input.url.trim(),
++      category: input.category.trim() || null,
++      tags: input.tags,
++      created_by: actor.id,
++    });
++    if (error) return { ok: false, error: error.message };
++    revalidatePath("/super-admin/gallery");
++    return { ok: true };
++  } catch (e) {
++    return { ok: false, error: e instanceof Error ? e.message : "Could not add image" };
++  }
+ }
+ 
+-export async function removeGalleryImage(id: string) {
+-  await requireSuperAdminUser();
+-  const admin = createAdminClient();
+-  await admin.from("gallery_images").delete().eq("id", id);
+-  revalidatePath("/super-admin/gallery");
++export async function toggleGalleryImage(id: string, isActive: boolean): Promise<Result> {
++  try {
++    await requireSuperAdminUser();
++    const admin = createAdminClient();
++    const { error } = await admin.from("gallery_images").update({ is_active: isActive }).eq("id", id);
++    if (error) return { ok: false, error: error.message };
++    revalidatePath("/super-admin/gallery");
++    return { ok: true };
++  } catch (e) {
++    return { ok: false, error: e instanceof Error ? e.message : "Could not update image" };
++  }
++}
++
++export async function removeGalleryImage(id: string): Promise<Result> {
++  try {
++    await requireSuperAdminUser();
++    const admin = createAdminClient();
++    const { data: row } = await admin.from("gallery_images").select("url").eq("id", id).single();
++    const { error } = await admin.from("gallery_images").delete().eq("id", id);
++    if (error) return { ok: false, error: error.message };
++
++    // Also delete the stored file if this row pointed at our bucket (pasted external URLs are left alone).
++    const marker = `/storage/v1/object/public/${BUCKET}/`;
++    const idx = row?.url?.indexOf(marker) ?? -1;
++    if (row?.url && idx !== -1) {
++      const objectPath = decodeURIComponent(row.url.slice(idx + marker.length).split("?")[0]);
++      await admin.storage.from(BUCKET).remove([objectPath]);
++    }
++    revalidatePath("/super-admin/gallery");
++    return { ok: true };
++  } catch (e) {
++    return { ok: false, error: e instanceof Error ? e.message : "Could not remove image" };
++  }
+ }
+diff --git a/src/app/super-admin/(console)/gallery/gallery-client.tsx b/src/app/super-admin/(console)/gallery/gallery-client.tsx
+index e923d6b..78c3cef 100644
+--- a/src/app/super-admin/(console)/gallery/gallery-client.tsx
++++ b/src/app/super-admin/(console)/gallery/gallery-client.tsx
+@@ -1,129 +1,308 @@
+ "use client";
+-import { useMemo, useState } from "react";
+-import { addGalleryImage, toggleGalleryImage, removeGalleryImage } from "./actions";
++import { useMemo, useRef, useState } from "react";
++import { createClient } from "@/lib/supabase/client";
++import { addGalleryImage, createGalleryUpload, toggleGalleryImage, removeGalleryImage } from "./actions";
+ 
+ type Image = { id: string; title: string; url: string; category: string | null; tags: string[]; is_active: boolean };
++type PickedFile = { file: File; preview: string };
++
++const UNCATEGORIZED = "__none__";
++const MAX_BYTES = 5 * 1024 * 1024;
++const ACCEPT = "image/jpeg,image/png,image/webp,image/gif,image/avif";
++const inputCls = "w-full mt-1 rounded-md border border-line bg-canvas px-3 py-2 text-sm";
++const labelCls = "text-xs font-semibold text-ink-mid uppercase tracking-wide";
++
++function baseName(name: string) {
++  return name.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " ").trim() || "Untitled";
++}
+ 
+ export function GalleryClient({ images }: { images: Image[] }) {
+   const [search, setSearch] = useState("");
+-  const [tagFilter, setTagFilter] = useState("");
++  const [categoryFilter, setCategoryFilter] = useState("");
+   const [showForm, setShowForm] = useState(false);
++  const [mode, setMode] = useState<"upload" | "url">("upload");
++  const [picked, setPicked] = useState<PickedFile[]>([]);
++  const [dragOver, setDragOver] = useState(false);
+   const [title, setTitle] = useState("");
+   const [url, setUrl] = useState("");
+   const [category, setCategory] = useState("");
+   const [tags, setTags] = useState("");
+   const [error, setError] = useState("");
+   const [saving, setSaving] = useState(false);
++  const [progress, setProgress] = useState("");
++  const [busyId, setBusyId] = useState<string | null>(null);
++  const fileInput = useRef<HTMLInputElement>(null);
++
++  // Filters are driven by Category: one pill per distinct category, with counts.
++  const categories = useMemo(() => {
++    const counts = new Map<string, number>();
++    let none = 0;
++    for (const i of images) {
++      const c = i.category?.trim();
++      if (c) counts.set(c, (counts.get(c) ?? 0) + 1);
++      else none++;
++    }
++    return {
++      list: Array.from(counts.entries()).sort((a, b) => a[0].localeCompare(b[0])),
++      none,
++    };
++  }, [images]);
+ 
+-  const allTags = useMemo(() => Array.from(new Set(images.flatMap((i) => i.tags))).sort(), [images]);
+   const filtered = images.filter((i) => {
+-    const matchesSearch = !search || i.title.toLowerCase().includes(search.toLowerCase());
+-    const matchesTag = !tagFilter || i.tags.includes(tagFilter);
+-    return matchesSearch && matchesTag;
++    const q = search.toLowerCase();
++    const matchesSearch = !q || i.title.toLowerCase().includes(q) || i.tags.some((t) => t.includes(q));
++    const matchesCategory =
++      !categoryFilter ||
++      (categoryFilter === UNCATEGORIZED ? !i.category?.trim() : i.category?.trim() === categoryFilter);
++    return matchesSearch && matchesCategory;
+   });
+ 
++  function addFiles(list: FileList | File[]) {
++    const next: PickedFile[] = [];
++    const problems: string[] = [];
++    for (const f of Array.from(list)) {
++      if (!f.type.startsWith("image/")) problems.push(`${f.name} is not an image`);
++      else if (f.size > MAX_BYTES) problems.push(`${f.name} is larger than 5 MB`);
++      else next.push({ file: f, preview: URL.createObjectURL(f) });
++    }
++    setError(problems.join(" · "));
++    if (next.length) setPicked((p) => [...p, ...next]);
++  }
++
++  function removePicked(idx: number) {
++    setPicked((p) => {
++      URL.revokeObjectURL(p[idx].preview);
++      return p.filter((_, i) => i !== idx);
++    });
++  }
++
++  function resetForm() {
++    picked.forEach((p) => URL.revokeObjectURL(p.preview));
++    setPicked([]);
++    setTitle("");
++    setUrl("");
++    setCategory("");
++    setTags("");
++    setProgress("");
++    if (fileInput.current) fileInput.current.value = "";
++  }
++
+   async function submit() {
+-    setSaving(true);
+     setError("");
+-    try {
+-      await addGalleryImage({
+-        title,
+-        url,
+-        category,
+-        tags: tags.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean),
++    // Reuse an existing category's exact spelling so "burgers" doesn't create a second pill next to "Burgers".
++    const typed = category.trim();
++    const cat = categories.list.find(([c]) => c.toLowerCase() === typed.toLowerCase())?.[0] ?? typed;
++    const tagList = tags.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean);
++
++    if (mode === "url") {
++      setSaving(true);
++      const res = await addGalleryImage({ title, url, category: cat, tags: tagList });
++      setSaving(false);
++      if (!res.ok) return setError(res.error);
++      resetForm();
++      setShowForm(false);
++      return;
++    }
++
++    if (picked.length === 0) return setError("Choose at least one image");
++
++    setSaving(true);
++    const supabase = createClient();
++    let done = 0;
++    for (const { file, preview } of picked) {
++      setProgress(`Uploading ${done + 1} of ${picked.length}…`);
++      const imgTitle = picked.length === 1 && title.trim() ? title.trim() : baseName(file.name);
++
++      const slot = await createGalleryUpload({ fileName: file.name, contentType: file.type, size: file.size });
++      if (!slot.ok) {
++        setError(`${file.name}: ${slot.error}`);
++        break;
++      }
++      const { error: upErr } = await supabase.storage.from("gallery").uploadToSignedUrl(slot.path, slot.token, file, {
++        contentType: file.type,
+       });
+-      setTitle("");
+-      setUrl("");
+-      setCategory("");
+-      setTags("");
++      if (upErr) {
++        setError(`${file.name}: ${upErr.message}`);
++        break;
++      }
++      const saved = await addGalleryImage({ title: imgTitle, url: slot.publicUrl, category: cat, tags: tagList });
++      if (!saved.ok) {
++        setError(`${file.name}: ${saved.error}`);
++        break;
++      }
++      done++;
++      URL.revokeObjectURL(preview);
++      setPicked((p) => p.filter((x) => x.file !== file));
++    }
++    setSaving(false);
++    setProgress("");
++    if (done === picked.length) {
++      resetForm();
+       setShowForm(false);
+-    } catch (e: any) {
+-      setError(e.message ?? "Could not add image");
+-    } finally {
+-      setSaving(false);
+     }
+   }
+ 
++  async function toggle(img: Image) {
++    setBusyId(img.id);
++    const res = await toggleGalleryImage(img.id, !img.is_active);
++    setBusyId(null);
++    if (!res.ok) alert(res.error);
++  }
++
++  async function remove(img: Image) {
++    if (!confirm(`Remove "${img.title}" from the gallery?`)) return;
++    setBusyId(img.id);
++    const res = await removeGalleryImage(img.id);
++    setBusyId(null);
++    if (!res.ok) alert(res.error);
++  }
++
++  const pill = (active: boolean) =>
++    `text-xs font-semibold px-3 py-1 rounded-full transition-colors ${active ? "bg-chili-500 text-white" : "bg-raised text-ink-mid hover:bg-hover"}`;
++
+   return (
+     <div>
+       <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+-        <div className="flex gap-2">
+-          <input
+-            value={search}
+-            onChange={(e) => setSearch(e.target.value)}
+-            placeholder="Search title…"
+-            className="rounded-md border border-line bg-canvas px-3 py-2 text-sm"
+-          />
+-        </div>
++        <input
++          value={search}
++          onChange={(e) => setSearch(e.target.value)}
++          placeholder="Search title or tag…"
++          className="rounded-md border border-line bg-canvas px-3 py-2 text-sm"
++        />
+         <button onClick={() => setShowForm((s) => !s)} className="rounded-md bg-chili-500 hover:bg-chili-600 text-white text-xs font-semibold px-3 py-1.5">
+-          {showForm ? "Close" : "+ Add image"}
++          {showForm ? "Close" : "+ Add images"}
+         </button>
+       </div>
+ 
+-      {allTags.length > 0 && (
+-        <div className="flex flex-wrap gap-2 mb-4">
+-          <button
+-            onClick={() => setTagFilter("")}
+-            className={`text-xs font-semibold px-3 py-1 rounded-full ${tagFilter === "" ? "bg-chili-500 text-white" : "bg-raised text-ink-mid"}`}
+-          >
+-            All
++      {(categories.list.length > 0 || categories.none > 0) && (
++        <div className="flex flex-wrap gap-2 mb-4" role="tablist" aria-label="Filter by category">
++          <button onClick={() => setCategoryFilter("")} className={pill(categoryFilter === "")}>
++            All ({images.length})
+           </button>
+-          {allTags.map((t) => (
+-            <button
+-              key={t}
+-              onClick={() => setTagFilter(t)}
+-              className={`text-xs font-semibold px-3 py-1 rounded-full ${tagFilter === t ? "bg-chili-500 text-white" : "bg-raised text-ink-mid"}`}
+-            >
+-              #{t}
++          {categories.list.map(([c, n]) => (
++            <button key={c} onClick={() => setCategoryFilter(c)} className={pill(categoryFilter === c)}>
++              {c} ({n})
+             </button>
+           ))}
++          {categories.none > 0 && (
++            <button onClick={() => setCategoryFilter(UNCATEGORIZED)} className={pill(categoryFilter === UNCATEGORIZED)}>
++              Uncategorized ({categories.none})
++            </button>
++          )}
+         </div>
+       )}
+ 
+       {showForm && (
+-        <div className="rounded-xl border border-line bg-surface p-4 mb-5 max-w-lg space-y-3">
+-          <div>
+-            <label className="text-xs font-semibold text-ink-mid uppercase tracking-wide">Title</label>
+-            <input value={title} onChange={(e) => setTitle(e.target.value)} className="w-full mt-1 rounded-md border border-line bg-canvas px-3 py-2 text-sm" />
+-          </div>
+-          <div>
+-            <label className="text-xs font-semibold text-ink-mid uppercase tracking-wide">Image URL</label>
+-            <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…" className="w-full mt-1 rounded-md border border-line bg-canvas px-3 py-2 text-sm" />
++        <div className="rounded-xl border border-line bg-surface p-4 mb-5 max-w-xl space-y-3">
++          <div className="flex gap-2">
++            <button onClick={() => setMode("upload")} className={pill(mode === "upload")}>Upload files</button>
++            <button onClick={() => setMode("url")} className={pill(mode === "url")}>Paste URL</button>
+           </div>
++
++          {mode === "upload" ? (
++            <div>
++              <div
++                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
++                onDragLeave={() => setDragOver(false)}
++                onDrop={(e) => { e.preventDefault(); setDragOver(false); addFiles(e.dataTransfer.files); }}
++                onClick={() => fileInput.current?.click()}
++                className={`cursor-pointer rounded-lg border-2 border-dashed px-4 py-6 text-center text-sm transition-colors ${dragOver ? "border-chili-500 bg-chili-500/10" : "border-line hover:bg-hover"}`}
++              >
++                <div className="font-semibold text-ink-strong">Click to choose or drop images here</div>
++                <div className="text-xs text-ink-faint mt-1">JPG, PNG, WebP, GIF or AVIF · up to 5 MB each</div>
++                <input
++                  ref={fileInput}
++                  type="file"
++                  accept={ACCEPT}
++                  multiple
++                  className="hidden"
++                  onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ""; }}
++                />
++              </div>
++              {picked.length > 0 && (
++                <div className="grid grid-cols-4 gap-2 mt-3">
++                  {picked.map((p, idx) => (
++                    <div key={p.preview} className="relative">
++                      {/* eslint-disable-next-line @next/next/no-img-element */}
++                      <img src={p.preview} alt={p.file.name} className="w-full h-16 object-cover rounded-md bg-raised" />
++                      <button
++                        onClick={() => removePicked(idx)}
++                        disabled={saving}
++                        aria-label={`Remove ${p.file.name}`}
++                        className="absolute -top-1.5 -right-1.5 h-5 w-5 rounded-full bg-crimson-500 text-white text-xs leading-5"
++                      >
++                        ×
++                      </button>
++                    </div>
++                  ))}
++                </div>
++              )}
++              {picked.length === 1 && (
++                <div className="mt-3">
++                  <label className={labelCls}>Title</label>
++                  <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={baseName(picked[0].file.name)} className={inputCls} />
++                </div>
++              )}
++              {picked.length > 1 && <p className="text-xs text-ink-faint mt-2">Each image is titled from its file name.</p>}
++            </div>
++          ) : (
++            <>
++              <div>
++                <label className={labelCls}>Title</label>
++                <input value={title} onChange={(e) => setTitle(e.target.value)} className={inputCls} />
++              </div>
++              <div>
++                <label className={labelCls}>Image URL</label>
++                <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…" className={inputCls} />
++              </div>
++            </>
++          )}
++
+           <div className="grid grid-cols-2 gap-3">
+             <div>
+-              <label className="text-xs font-semibold text-ink-mid uppercase tracking-wide">Category</label>
+-              <input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="Burgers" className="w-full mt-1 rounded-md border border-line bg-canvas px-3 py-2 text-sm" />
++              <label className={labelCls}>Category</label>
++              <input
++                value={category}
++                onChange={(e) => setCategory(e.target.value)}
++                list="gallery-categories"
++                placeholder="Burgers"
++                className={inputCls}
++              />
++              <datalist id="gallery-categories">
++                {categories.list.map(([c]) => <option key={c} value={c} />)}
++              </datalist>
+             </div>
+             <div>
+-              <label className="text-xs font-semibold text-ink-mid uppercase tracking-wide">Tags (comma separated)</label>
+-              <input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="beef, spicy" className="w-full mt-1 rounded-md border border-line bg-canvas px-3 py-2 text-sm" />
++              <label className={labelCls}>Tags (comma separated)</label>
++              <input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="beef, spicy" className={inputCls} />
+             </div>
+           </div>
++
+           {error && <p className="text-crimson-500 text-xs">{error}</p>}
+           <button onClick={submit} disabled={saving} className="rounded-md bg-chili-500 hover:bg-chili-600 text-white text-xs font-semibold px-4 py-2 disabled:opacity-50">
+-            {saving ? "Saving…" : "Add to gallery"}
++            {saving ? progress || "Saving…" : mode === "upload" ? `Upload${picked.length > 1 ? ` ${picked.length} images` : ""}` : "Add to gallery"}
+           </button>
+         </div>
+       )}
+ 
+       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+         {filtered.map((img) => (
+-          <div key={img.id} className="rounded-xl border border-line bg-surface overflow-hidden">
++          <div key={img.id} className={`rounded-xl border border-line bg-surface overflow-hidden transition-opacity ${busyId === img.id ? "opacity-50" : ""}`}>
+             {/* eslint-disable-next-line @next/next/no-img-element */}
+             <img src={img.url} alt={img.title} className="w-full h-28 object-cover bg-raised" loading="lazy" />
+             <div className="p-3">
+               <div className="font-semibold text-sm text-ink-strong truncate">{img.title}</div>
+-              <div className="text-xs text-ink-faint mb-2">{img.tags.map((t) => `#${t}`).join(" ")}</div>
++              <div className="text-xs text-ink-mid truncate">{img.category?.trim() || "Uncategorized"}</div>
++              <div className="text-xs text-ink-faint mb-2 truncate">{img.tags.map((t) => `#${t}`).join(" ")}</div>
+               <div className="flex items-center justify-between">
+                 <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${img.is_active ? "bg-basil-500/15 text-basil-500" : "bg-ink-faint/15 text-ink-faint"}`}>
+                   {img.is_active ? "Active" : "Hidden"}
+                 </span>
+                 <div className="flex gap-1">
+-                  <button onClick={() => toggleGalleryImage(img.id, !img.is_active)} className="text-xs px-2 py-1 rounded-md bg-raised hover:bg-hover" title={img.is_active ? "Hide" : "Activate"}>
++                  <button onClick={() => toggle(img)} disabled={busyId === img.id} className="text-xs px-2 py-1 rounded-md bg-raised hover:bg-hover" title={img.is_active ? "Hide" : "Activate"}>
+                     {img.is_active ? "Hide" : "Show"}
+                   </button>
+-                  <button onClick={() => removeGalleryImage(img.id)} className="text-xs px-2 py-1 rounded-md bg-crimson-500/15 text-crimson-500 hover:bg-crimson-500/25">
++                  <button onClick={() => remove(img)} disabled={busyId === img.id} className="text-xs px-2 py-1 rounded-md bg-crimson-500/15 text-crimson-500 hover:bg-crimson-500/25">
+                     Remove
+                   </button>
+                 </div>
+@@ -131,7 +310,7 @@ export function GalleryClient({ images }: { images: Image[] }) {
+             </div>
+           </div>
+         ))}
+-        {filtered.length === 0 && <div className="col-span-full text-center py-10 text-ink-faint text-sm">No images match, try another tag or add one.</div>}
++        {filtered.length === 0 && <div className="col-span-full text-center py-10 text-ink-faint text-sm">No images match, try another category or add one.</div>}
+       </div>
+     </div>
+   );
+diff --git a/src/app/super-admin/(console)/loading.tsx b/src/app/super-admin/(console)/loading.tsx
+new file mode 100644
+index 0000000..3bc777a
+--- /dev/null
++++ b/src/app/super-admin/(console)/loading.tsx
+@@ -0,0 +1,10 @@
++/** Shown instantly inside the console shell (sidebar + topbar stay put) while the next
++ *  super-admin page's server data loads — this is the page-change animation. */
++export default function ConsoleLoading() {
++  return (
++    <div className="flex flex-col items-center justify-center gap-3 py-32 text-ink-faint">
++      <span className="rp-spinner rp-spinner-lg" />
++      <span className="text-sm">Loading…</span>
++    </div>
++  );
++}
+diff --git a/src/components/global-loading.tsx b/src/components/global-loading.tsx
+new file mode 100644
+index 0000000..2791af5
+--- /dev/null
++++ b/src/components/global-loading.tsx
+@@ -0,0 +1,122 @@
++"use client";
++import { useEffect, useRef, useState } from "react";
++import { usePathname } from "next/navigation";
++
++/** One app-wide loading indicator (top progress bar + corner spinner), mounted once in the root
++ *  layout so no page needs wiring. It turns on while ANY of these is in flight:
++ *    - a click on an internal <Link>/<a> until the new route renders,
++ *    - a Next.js server action (POST with a `Next-Action` header) — every form action and
++ *      onClick={() => someAction()} in the app,
++ *    - a non-prefetch RSC navigation/refresh fetch,
++ *    - Supabase auth/storage calls (login, logout, password change, gallery uploads).
++ *  It waits SHOW_DELAY ms before appearing so instant actions don't flash. */
++const SHOW_DELAY = 120;
++const NAV_SAFETY_MS = 10000;
++
++function headerOf(input: RequestInfo | URL, init: RequestInit | undefined, name: string) {
++  const fromInit = init?.headers;
++  if (fromInit) return new Headers(fromInit).get(name);
++  if (typeof Request !== "undefined" && input instanceof Request) return input.headers.get(name);
++  return null;
++}
++
++function urlOf(input: RequestInfo | URL) {
++  return typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
++}
++
++export function GlobalLoading() {
++  const pathname = usePathname();
++  const [visible, setVisible] = useState(false);
++  const state = useRef({ inflight: 0, navPending: false, update: () => {} });
++
++  useEffect(() => {
++    const s = state.current;
++    let shown = false;
++    let showTimer: ReturnType<typeof setTimeout> | undefined;
++    let hideTimer: ReturnType<typeof setTimeout> | undefined;
++    let navSafety: ReturnType<typeof setTimeout> | undefined;
++
++    s.update = () => {
++      const busy = s.inflight > 0 || s.navPending;
++      if (busy) {
++        clearTimeout(hideTimer);
++        if (!shown && !showTimer) {
++          showTimer = setTimeout(() => {
++            shown = true;
++            showTimer = undefined;
++            setVisible(true);
++          }, SHOW_DELAY);
++        }
++      } else {
++        clearTimeout(showTimer);
++        showTimer = undefined;
++        if (shown) {
++          hideTimer = setTimeout(() => {
++            shown = false;
++            setVisible(false);
++          }, 250);
++        }
++      }
++    };
++
++    const originalFetch = window.fetch;
++    window.fetch = async (input, init) => {
++      const url = urlOf(input);
++      const isServerAction = headerOf(input, init, "Next-Action") !== null;
++      const isRsc = headerOf(input, init, "RSC") !== null && headerOf(input, init, "Next-Router-Prefetch") === null;
++      const isSupabase = /\.supabase\.co\/(auth|storage)\/v1\//.test(url);
++      if (!isServerAction && !isRsc && !isSupabase) return originalFetch(input, init);
++
++      s.inflight++;
++      s.update();
++      try {
++        return await originalFetch(input, init);
++      } finally {
++        s.inflight = Math.max(0, s.inflight - 1);
++        s.update();
++      }
++    };
++
++    // Link clicks: show immediately-ish, clear when the pathname changes (second effect below).
++    const onClick = (e: MouseEvent) => {
++      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
++      const a = (e.target as Element | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
++      if (!a || (a.target && a.target !== "_self") || a.hasAttribute("download")) return;
++      const dest = new URL(a.href, window.location.href);
++      if (dest.origin !== window.location.origin) return;
++      if (dest.pathname === window.location.pathname && dest.search === window.location.search) return;
++      s.navPending = true;
++      s.update();
++      clearTimeout(navSafety);
++      navSafety = setTimeout(() => {
++        s.navPending = false;
++        s.update();
++      }, NAV_SAFETY_MS);
++    };
++    document.addEventListener("click", onClick, true);
++
++    return () => {
++      window.fetch = originalFetch;
++      document.removeEventListener("click", onClick, true);
++      clearTimeout(showTimer);
++      clearTimeout(hideTimer);
++      clearTimeout(navSafety);
++    };
++  }, []);
++
++  // New route committed → navigation finished.
++  useEffect(() => {
++    state.current.navPending = false;
++    state.current.update();
++  }, [pathname]);
++
++  return (
++    <div aria-hidden={!visible} role="status" aria-live="polite">
++      <div className={`rp-bar ${visible ? "rp-bar-on" : ""}`} />
++      <div className={`rp-corner ${visible ? "rp-corner-on" : ""}`}>
++        <span className="rp-spinner" />
++        <span className="text-xs font-semibold">Loading…</span>
++      </div>
++    </div>
++  );
++}
+diff --git a/supabase/migrations/0009_gallery_storage_bucket.sql b/supabase/migrations/0009_gallery_storage_bucket.sql
+new file mode 100644
+index 0000000..62e57a6
+--- /dev/null
++++ b/supabase/migrations/0009_gallery_storage_bucket.sql
+@@ -0,0 +1,19 @@
++-- Master Gallery uploads: a public Storage bucket for the image files themselves.
++-- gallery_images.url keeps pointing at a URL (now the bucket's public URL for uploaded files,
++-- or any external URL if one is pasted instead), so restaurants' product pickers need no change.
++--
++-- Writes happen only through signed upload URLs minted by the super-admin server action
++-- (service-role client), so no INSERT/UPDATE/DELETE policies are added for anon/authenticated.
++-- The bucket is public, which lets <img src> work without signing every read.
++INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
++VALUES (
++  'gallery',
++  'gallery',
++  true,
++  5242880, -- 5 MB per image
++  ARRAY['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif']
++)
++ON CONFLICT (id) DO UPDATE
++  SET public = EXCLUDED.public,
++      file_size_limit = EXCLUDED.file_size_limit,
++      allowed_mime_types = EXCLUDED.allowed_mime_types;
