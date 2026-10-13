@@ -1,13 +1,14 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Building2, CreditCard, Image as ImageIcon, ScrollText, Bell, Package, Settings as SettingsIcon, type LucideIcon } from "lucide-react";
+import { LayoutDashboard, Building2, CreditCard, Image as ImageIcon, ScrollText, Bell, Package, Network, Settings as SettingsIcon, type LucideIcon } from "lucide-react";
 
 type NavItem = { href: string; label: string; icon: LucideIcon };
 
 const NAV_ITEMS: NavItem[] = [
   { href: "/super-admin/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/super-admin/restaurants", label: "Restaurants", icon: Building2 },
+  { href: "/super-admin/chains", label: "Multi-branch", icon: Network },
   { href: "/super-admin/subscriptions", label: "Subscriptions", icon: CreditCard },
   { href: "/super-admin/gallery", label: "Master Gallery", icon: ImageIcon },
   { href: "/super-admin/ingredients", label: "Ingredients", icon: Package },
